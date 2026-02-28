@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/dylib-hook-registry", "crates/dylib-patcher"]
+resolver = "2"
