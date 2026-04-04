@@ -87,6 +87,39 @@ pub fn run(patcher: Patcher) -> Result<()> {
             let _ = result; // suppress unused warning
             Ok(())
         }
+        Some("config") => {
+            // Sub-subcommands: config [show|set|reset|path]
+            let config_args: Vec<&str> = args.iter()
+                .skip(1)
+                .filter(|a| *a != "config" && !a.starts_with('-'))
+                .map(|s| s.as_str())
+                .collect();
+
+            match config_args.first().copied() {
+                None | Some("show") => patcher.config_show(),
+                Some("set") => {
+                    if config_args.len() < 3 {
+                        // Show field list as usage help
+                        if let Some(meta) = patcher.config_meta() {
+                            let mut msg = "Usage: cargo patch config set <key> <value>\n\nKeys:\n".to_string();
+                            for field in &meta.fields {
+                                let vals: Vec<&str> = field.options.iter().map(|o| o.value.as_str()).collect();
+                                msg.push_str(&format!("  {:<20}{}\n", field.key, vals.join(" | ")));
+                            }
+                            anyhow::bail!("{msg}");
+                        } else {
+                            anyhow::bail!("Usage: cargo patch config set <key> <value>");
+                        }
+                    }
+                    patcher.config_set(config_args[1], config_args[2])
+                }
+                Some("reset") => patcher.config_reset(),
+                Some("path") => patcher.config_path(),
+                Some(other) => anyhow::bail!(
+                    "Unknown config subcommand: {other}\n\nUsage: cargo patch config [show|set|reset|path]"
+                ),
+            }
+        }
         Some(other) => {
             anyhow::bail!("Unknown command: {other}\nRun with --help for usage.");
         }
@@ -107,6 +140,12 @@ fn print_usage(patcher: &Patcher) {
     eprintln!("  cargo patch list           Same as status");
     eprintln!("  cargo patch remove         Quit + remove this hook + relaunch (keeps others)");
     eprintln!("  cargo patch restore        Quit + restore original binary + relaunch");
+    if patcher.config_meta().is_some() {
+        eprintln!("  cargo patch config         Show config + available options");
+        eprintln!("  cargo patch config set K V Set a config field");
+        eprintln!("  cargo patch config reset   Reset config to defaults");
+        eprintln!("  cargo patch config path    Print config file path");
+    }
     eprintln!("  cargo patch --help         Show this help");
     eprintln!();
     eprintln!("Target: {}", patcher.target.app_path.display());

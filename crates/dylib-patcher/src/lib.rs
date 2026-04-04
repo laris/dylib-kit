@@ -38,6 +38,8 @@ pub struct HookProject {
     pub crate_name: Option<String>,
     /// Registry entry template for this hook
     pub registry_entry: Option<dylib_hook_registry::HookEntry>,
+    /// Hook-specific config metadata for `cargo patch config` support.
+    pub config_meta: Option<HookConfigMeta>,
 }
 
 impl HookProject {
@@ -47,6 +49,7 @@ impl HookProject {
             dylib_filename: dylib_filename.to_string(),
             crate_name: None,
             registry_entry: None,
+            config_meta: None,
         }
     }
 
@@ -60,8 +63,130 @@ impl HookProject {
         self
     }
 
+    pub fn with_config(mut self, meta: HookConfigMeta) -> Self {
+        self.config_meta = Some(meta);
+        self
+    }
+
     fn effective_crate_name(&self) -> &str {
         self.crate_name.as_deref().unwrap_or(&self.name)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hook config metadata — schema-agnostic config support for `cargo patch config`
+// ---------------------------------------------------------------------------
+
+/// Describes a hook's config file for the framework's `cargo patch config` CLI.
+///
+/// Each hook project provides its defaults (as JSON string) and field descriptions.
+/// The framework handles show/set/reset/path mechanics using plain JSON — no need
+/// for the framework to know the hook's Rust config struct.
+///
+/// Config file location: `~/.config/dylib-hooks/{app_id}/{filename}`
+///
+/// # Example
+///
+/// ```no_run
+/// use dylib_patcher::{HookConfigMeta, ConfigField};
+///
+/// let meta = HookConfigMeta::new("zed-yolo-hook.json", r#"{"mode":"allow_all"}"#)
+///     .with_field(ConfigField::new("mode", "Which hooks to install")
+///         .with_options(&["allow_all", "allow_safe", "disabled"])
+///         .with_default("allow_all"));
+/// ```
+#[derive(Debug, Clone)]
+pub struct HookConfigMeta {
+    /// Config filename (e.g., "zed-yolo-hook.json"). Placed in the app's config dir.
+    pub filename: String,
+    /// Default config as a JSON string. Used by `config reset` and as fallback.
+    pub defaults_json: String,
+    /// Field descriptions for `cargo patch config` display.
+    pub fields: Vec<ConfigField>,
+}
+
+/// Describes one field in a hook's config file.
+#[derive(Debug, Clone)]
+pub struct ConfigField {
+    /// JSON key name (e.g., "mode")
+    pub key: String,
+    /// Short description (e.g., "Which hooks to install")
+    pub description: String,
+    /// Available values with optional per-value descriptions.
+    pub options: Vec<ConfigOption>,
+    /// Which value is the default (marked with [default] in display).
+    pub default_value: Option<String>,
+}
+
+/// One possible value for a config field.
+#[derive(Debug, Clone)]
+pub struct ConfigOption {
+    /// The value string (e.g., "allow_all")
+    pub value: String,
+    /// Optional description (e.g., "Both ACP + native hooks")
+    pub description: Option<String>,
+}
+
+impl HookConfigMeta {
+    pub fn new(filename: &str, defaults_json: &str) -> Self {
+        Self {
+            filename: filename.to_string(),
+            defaults_json: defaults_json.to_string(),
+            fields: Vec::new(),
+        }
+    }
+
+    pub fn with_field(mut self, field: ConfigField) -> Self {
+        self.fields.push(field);
+        self
+    }
+
+    /// Get the config file path for an app.
+    pub fn config_path(&self, app_id: &str) -> Option<PathBuf> {
+        let home = dirs::home_dir()?;
+        Some(
+            home.join(".config")
+                .join("dylib-hooks")
+                .join(app_id)
+                .join(&self.filename),
+        )
+    }
+}
+
+impl ConfigField {
+    pub fn new(key: &str, description: &str) -> Self {
+        Self {
+            key: key.to_string(),
+            description: description.to_string(),
+            options: Vec::new(),
+            default_value: None,
+        }
+    }
+
+    /// Add available values as plain strings (no per-value description).
+    pub fn with_options(mut self, values: &[&str]) -> Self {
+        for v in values {
+            self.options.push(ConfigOption {
+                value: v.to_string(),
+                description: None,
+            });
+        }
+        self
+    }
+
+    /// Add a single option with description.
+    pub fn with_option(mut self, value: &str, description: &str) -> Self {
+        self.options.push(ConfigOption {
+            value: value.to_string(),
+            description: Some(description.to_string()),
+        });
+        self
+    }
+
+    /// Mark which value is the default.
+    pub fn with_default(mut self, value: &str) -> Self {
+        self.default_value = Some(value.to_string());
+        self
     }
 }
 
@@ -793,6 +918,170 @@ impl Patcher {
             None => eprintln!("  (no registry file)"),
         }
 
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Config subcommand support
+    // ------------------------------------------------------------------
+
+    /// Get the config metadata, if the hook project provided it.
+    pub fn config_meta(&self) -> Option<&HookConfigMeta> {
+        self.project.config_meta.as_ref()
+    }
+
+    /// Show current config + available options.
+    pub fn config_show(&self) -> Result<()> {
+        let meta = self.config_meta()
+            .ok_or_else(|| anyhow::anyhow!("This hook does not define a config schema.\nConfig is not supported for '{}'.", self.project.name))?;
+
+        let path = meta.config_path(&self.target.app_id)
+            .ok_or_else(|| anyhow::anyhow!("cannot determine config path"))?;
+        let exists = path.exists();
+
+        eprintln!("Config file: {} {}", path.display(), if exists { "(exists)" } else { "(using defaults)" });
+        eprintln!("App ID: {}", self.target.app_id);
+        eprintln!();
+
+        // Show current values
+        if exists {
+            let content = std::fs::read_to_string(&path)?;
+            let value: serde_json::Value = serde_json::from_str(&content)
+                .context("failed to parse config file")?;
+            eprintln!("{}", serde_json::to_string_pretty(&value)?);
+        } else {
+            let value: serde_json::Value = serde_json::from_str(&meta.defaults_json)
+                .context("failed to parse defaults JSON")?;
+            eprintln!("{}", serde_json::to_string_pretty(&value)?);
+        }
+
+        // Show available options for each field
+        if !meta.fields.is_empty() {
+            eprintln!();
+            eprintln!("Available options:");
+            for field in &meta.fields {
+                eprintln!();
+                eprintln!("  {:<24}{}", field.key, field.description);
+                for opt in &field.options {
+                    let is_default = field.default_value.as_deref() == Some(&opt.value);
+                    let tag = if is_default { "  [default]" } else { "" };
+                    match &opt.description {
+                        Some(desc) => eprintln!("    {:<20}{}{}", opt.value, desc, tag),
+                        None => eprintln!("    {}{}", opt.value, tag),
+                    }
+                }
+            }
+            eprintln!();
+        }
+
+        if !exists {
+            eprintln!("Run `cargo patch config reset` to create the config file.");
+        } else {
+            eprintln!("Example: cargo patch config set <key> <value>");
+        }
+        Ok(())
+    }
+
+    /// Set a single config field.
+    pub fn config_set(&self, key: &str, value: &str) -> Result<()> {
+        let meta = self.config_meta()
+            .ok_or_else(|| anyhow::anyhow!("This hook does not define a config schema."))?;
+
+        let path = meta.config_path(&self.target.app_id)
+            .ok_or_else(|| anyhow::anyhow!("cannot determine config path"))?;
+
+        // Load existing or create from defaults
+        let mut config: serde_json::Value = if path.exists() {
+            let content = std::fs::read_to_string(&path)?;
+            serde_json::from_str(&content)?
+        } else {
+            serde_json::from_str(&meta.defaults_json)?
+        };
+
+        let obj = config.as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("config is not a JSON object"))?;
+
+        if !obj.contains_key(key) {
+            // Build helpful error with valid keys + options
+            let mut msg = format!("Unknown config key: {key}\n\nValid keys:\n");
+            for field in &meta.fields {
+                msg.push_str(&format!("  {:<20}{}\n", field.key, field.description));
+                for opt in &field.options {
+                    let tag = if field.default_value.as_deref() == Some(&opt.value) { " [default]" } else { "" };
+                    msg.push_str(&format!("    {}{}\n", opt.value, tag));
+                }
+            }
+            bail!("{msg}");
+        }
+
+        // Validate against known options if the field has them
+        if let Some(field) = meta.fields.iter().find(|f| f.key == key) {
+            if !field.options.is_empty() {
+                let valid_values: Vec<&str> = field.options.iter().map(|o| o.value.as_str()).collect();
+                // Try to parse as JSON first (for numbers), fall back to string
+                let check_value = if value.starts_with('"') {
+                    value.trim_matches('"')
+                } else {
+                    value
+                };
+                if !valid_values.contains(&check_value) {
+                    bail!(
+                        "Invalid value '{value}' for '{key}'.\n\nValid values: {}",
+                        valid_values.join(", ")
+                    );
+                }
+            }
+        }
+
+        // Try to parse value as JSON (for numbers/booleans), fall back to string
+        let json_value: serde_json::Value = serde_json::from_str(value)
+            .unwrap_or_else(|_| serde_json::Value::String(value.to_string()));
+
+        obj.insert(key.to_string(), json_value);
+
+        let json_str = serde_json::to_string_pretty(&config)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, &json_str)?;
+
+        eprintln!("Set {key} = {value}");
+        eprintln!("Saved to: {}", path.display());
+        eprintln!("\nRestart the app for changes to take effect.");
+        Ok(())
+    }
+
+    /// Reset config to defaults.
+    pub fn config_reset(&self) -> Result<()> {
+        let meta = self.config_meta()
+            .ok_or_else(|| anyhow::anyhow!("This hook does not define a config schema."))?;
+
+        let path = meta.config_path(&self.target.app_id)
+            .ok_or_else(|| anyhow::anyhow!("cannot determine config path"))?;
+
+        // Pretty-print the defaults
+        let value: serde_json::Value = serde_json::from_str(&meta.defaults_json)
+            .context("failed to parse defaults JSON")?;
+        let json_str = serde_json::to_string_pretty(&value)?;
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, &json_str)?;
+
+        eprintln!("Config reset to defaults.");
+        eprintln!("Saved to: {}", path.display());
+        Ok(())
+    }
+
+    /// Print config file path.
+    pub fn config_path(&self) -> Result<()> {
+        let meta = self.config_meta()
+            .ok_or_else(|| anyhow::anyhow!("This hook does not define a config schema."))?;
+
+        if let Some(path) = meta.config_path(&self.target.app_id) {
+            println!("{}", path.display());
+        }
         Ok(())
     }
 
