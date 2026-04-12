@@ -197,6 +197,43 @@ impl HookRegistry {
         }
     }
 
+    /// Atomically load → register → save with file locking.
+    ///
+    /// Prevents race conditions when multiple hooks' `#[ctor]` functions run
+    /// concurrently in different processes (Zed spawns multiple processes, each
+    /// loading all injected dylibs). Without locking, concurrent read-modify-write
+    /// cycles can overwrite each other's entries.
+    pub fn locked_register(app_id: &str, entry: HookEntry) -> std::io::Result<()> {
+        let path = registry_path(app_id)
+            .ok_or_else(|| std::io::Error::other("cannot determine registry path"))?;
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let lock_path = path.with_extension("lock");
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)?;
+
+        use fs2::FileExt;
+        // Block up to ~5 seconds waiting for the lock
+        lock_file.lock_exclusive()
+            .map_err(|e| std::io::Error::other(format!("registry lock failed: {e}")))?;
+
+        let result = (|| {
+            let mut reg = Self::load_from(&path).unwrap_or_default();
+            reg.app_id = Some(app_id.to_string());
+            reg.register(entry);
+            reg.save_to(&path)
+        })();
+
+        let _ = lock_file.unlock();
+        result
+    }
+
     /// Remove a hook entry by name. Returns true if found and removed.
     pub fn remove(&mut self, name: &str) -> bool {
         let before = self.hooks.len();
