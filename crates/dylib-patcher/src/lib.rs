@@ -348,6 +348,19 @@ impl Patcher {
     }
 
     /// List all custom (non-system) dylibs injected into the target.
+    ///
+    /// Calls `otool -L` and filters for weak deps that aren't from the system.
+    /// All `Patcher::inject` calls use `insert-dylib --weak`, so injected
+    /// dylibs are emitted by the linker as `LC_LOAD_WEAK_DYLIB` and printed
+    /// by `otool -L` with a trailing `, weak)` in the parenthesized
+    /// metadata, e.g.:
+    ///
+    /// ```text
+    ///     /Users/me/foo.dylib (compatibility version 0.0.0, current version 0.0.0, weak)
+    /// ```
+    ///
+    /// The parsing is split into a pure function (`parse_injected`) so it
+    /// can be unit-tested without spawning otool.
     pub fn list_injected(&self) -> Result<Vec<String>> {
         let output = Command::new("otool")
             .arg("-L")
@@ -356,14 +369,7 @@ impl Patcher {
             .context("failed to run otool")?;
 
         let text = String::from_utf8_lossy(&output.stdout);
-        let custom: Vec<String> = text
-            .lines()
-            .filter(|l| l.contains("(weak)") || l.contains("LC_LOAD_WEAK_DYLIB"))
-            .filter(|l| !l.contains("/System/") && !l.contains("/usr/"))
-            .map(|l| l.trim().split(" (").next().unwrap_or(l.trim()).to_string())
-            .collect();
-
-        Ok(custom)
+        Ok(parse_injected(&text))
     }
 
     /// Inject our hook dylib (stacking alongside existing hooks).
@@ -1363,3 +1369,132 @@ fn matches_simple_glob(text: &str, pattern: &str) -> bool {
     }
     true
 }
+
+/// Parse `otool -L` output and return the dylib paths of weak (custom-injected)
+/// non-system libraries.
+///
+/// Pulled out as a pure function so it can be unit-tested without spawning
+/// otool. macOS `otool -L` emits one line per linked library, e.g.:
+///
+/// ```text
+/// /Applications/Foo.app/Contents/MacOS/foo:
+///         /System/Library/Frameworks/Foundation.framework/.../Foundation (compatibility version 300.0.0, current version 3038.1.255)
+///         /Users/me/dev/foo/libhook.dylib (compatibility version 0.0.0, current version 0.0.0, weak)
+///         /usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)
+/// ```
+///
+/// We want the second line. The naive substring `(weak)` from a previous
+/// version of this function never matched because the actual format is
+/// `, weak)` (comma-space, then `weak`, then close-paren) — an off-by-format
+/// bug that hid every injection from `cargo patch list` / `status`.
+pub fn parse_injected(otool_output: &str) -> Vec<String> {
+    otool_output
+        .lines()
+        // Match the trailing-flag form `..., weak)` that otool emits for
+        // `LC_LOAD_WEAK_DYLIB`. Substring `weak)` is unique enough — it
+        // never appears in regular dylib metadata or in path components.
+        .filter(|l| l.contains(", weak)"))
+        // Skip system frameworks and SDK libraries.
+        .filter(|l| !l.contains("/System/") && !l.contains("/usr/"))
+        // Strip the parenthesized metadata, keep just the path.
+        .map(|l| {
+            l.trim()
+                .rsplit_once(" (")
+                .map(|(path, _)| path.to_string())
+                .unwrap_or_else(|| l.trim().to_string())
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_injected;
+
+    /// Real `otool -L` output captured from `/Applications/Zed Preview.app`
+    /// on 2026-04-25 after `cargo patch --verify` injected two hook dylibs.
+    /// Trimmed to a representative slice (system frameworks + 2 weak deps).
+    const SAMPLE_OTOOL_L: &str = "\
+/Applications/Zed Preview.app/Contents/MacOS/zed:
+\t/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices (compatibility version 1.0.0, current version 65.0.0)
+\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 3038.1.255)
+\t/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation (compatibility version 300.0.0, current version 3038.1.255)
+\t/Users/lqiao/dev/codes/zed-yolo-hook/target/release/libzed_yolo_hook.dylib (compatibility version 0.0.0, current version 0.0.0, weak)
+\t/Users/lqiao/dev/codes/zed-project-workspace/target/release/libzed_prj_workspace_hook.dylib (compatibility version 0.0.0, current version 0.0.0, weak)
+\t/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)
+\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)
+";
+
+    #[test]
+    fn extracts_only_weak_non_system_dylibs() {
+        let injected = parse_injected(SAMPLE_OTOOL_L);
+        assert_eq!(
+            injected,
+            vec![
+                "/Users/lqiao/dev/codes/zed-yolo-hook/target/release/libzed_yolo_hook.dylib"
+                    .to_string(),
+                "/Users/lqiao/dev/codes/zed-project-workspace/target/release/libzed_prj_workspace_hook.dylib"
+                    .to_string(),
+            ],
+            "should match `, weak)` lines and strip the version metadata"
+        );
+    }
+
+    #[test]
+    fn empty_input_returns_empty() {
+        assert!(parse_injected("").is_empty());
+    }
+
+    #[test]
+    fn no_weak_deps_returns_empty() {
+        let only_system = "\
+/some/binary:
+\t/System/Library/Frameworks/Foo.framework/Foo (compatibility version 1.0.0, current version 1.0.0)
+\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1.0.0)
+";
+        assert!(parse_injected(only_system).is_empty());
+    }
+
+    #[test]
+    fn skips_system_paths_even_if_marked_weak() {
+        // Hypothetical: even if a system framework were weakly linked, we
+        // still don't want it in the "injected hooks" list.
+        let mixed = "\
+/binary:
+\t/System/Library/PrivateFrameworks/Hypothetical.framework/Hypothetical (compatibility version 1.0.0, current version 1.0.0, weak)
+\t/Users/me/dev/myhook.dylib (compatibility version 0.0.0, current version 0.0.0, weak)
+";
+        assert_eq!(
+            parse_injected(mixed),
+            vec!["/Users/me/dev/myhook.dylib".to_string()]
+        );
+    }
+
+    #[test]
+    fn does_not_match_non_weak_custom_libs() {
+        // A custom dylib that's strong-linked (no `, weak)` suffix) should
+        // not appear — our injector only ever uses `--weak`, so a strong
+        // custom dylib would be a manual addition we don't want to claim.
+        let strong = "\
+/binary:
+\t/Users/me/strongly_linked.dylib (compatibility version 1.0.0, current version 1.0.0)
+";
+        assert!(parse_injected(strong).is_empty());
+    }
+
+    #[test]
+    fn handles_paths_with_spaces() {
+        // macOS paths frequently contain spaces (e.g., 'Application
+        // Support'). The split must be on the LAST ` (`, not the first.
+        let with_spaces = "\
+/binary:
+\t/Users/me/Library/Application Support/MyApp/lib.dylib (compatibility version 0.0.0, current version 0.0.0, weak)
+";
+        assert_eq!(
+            parse_injected(with_spaces),
+            vec![
+                "/Users/me/Library/Application Support/MyApp/lib.dylib".to_string()
+            ]
+        );
+    }
+}
+
