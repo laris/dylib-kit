@@ -1,0 +1,28 @@
+{
+  "folders": [
+    {
+      "path": "."
+    },
+    {
+      "path": "../zed-yolo-hook"
+    },
+    {
+      "path": "../zed-project-workspace"
+    },
+    {
+      "path": "../zed-yolo"
+    },
+    {
+      "path": "../../codes-repos/gh-zed-industries__codex-acp"
+    },
+    {
+      "path": "../../codes-repos/gh-agentclientprotocol__agent-client-protocol"
+    },
+    {
+      "path": "../../codes-repos/gh-agentclientprotocol__claude-agent-acp"
+    },
+    {
+      "path": "../../codes-repos/gh-agentclientprotocol__rust-sdk"
+    }
+  ]
+}
