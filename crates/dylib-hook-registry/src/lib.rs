@@ -220,7 +220,8 @@ impl HookRegistry {
 
         use fs2::FileExt;
         // Block up to ~5 seconds waiting for the lock
-        lock_file.lock_exclusive()
+        lock_file
+            .lock_exclusive()
             .map_err(|e| std::io::Error::other(format!("registry lock failed: {e}")))?;
 
         let result = (|| {
@@ -419,21 +420,22 @@ mod tests {
     #[test]
     fn find_replace_conflict() {
         let mut reg = HookRegistry::new();
-        reg.register(
-            HookEntry::new("hook-a", "/a.dylib")
-                .with_symbol("sqlite3_prepare_v2", "replace", "a"),
-        );
-        reg.register(
-            HookEntry::new("hook-b", "/b.dylib")
-                .with_symbol("some_fn", "attach", "b"),
-        );
+        reg.register(HookEntry::new("hook-a", "/a.dylib").with_symbol(
+            "sqlite3_prepare_v2",
+            "replace",
+            "a",
+        ));
+        reg.register(HookEntry::new("hook-b", "/b.dylib").with_symbol("some_fn", "attach", "b"));
 
         assert_eq!(
             reg.find_replace_conflict("sqlite3_prepare_v2", "hook-c"),
             Some("hook-a")
         );
         assert!(reg.find_replace_conflict("some_fn", "hook-c").is_none());
-        assert!(reg.find_replace_conflict("sqlite3_prepare_v2", "hook-a").is_none());
+        assert!(
+            reg.find_replace_conflict("sqlite3_prepare_v2", "hook-a")
+                .is_none()
+        );
     }
 
     #[test]

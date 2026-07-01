@@ -219,11 +219,7 @@ impl TargetApp {
     }
 
     pub fn zed_stable() -> Self {
-        Self::new(
-            "/Applications/Zed.app",
-            "Contents/MacOS/zed",
-            "zed-stable",
-        )
+        Self::new("/Applications/Zed.app", "Contents/MacOS/zed", "zed-stable")
     }
 
     /// Resolve target from CLI args (--stable flag).
@@ -265,7 +261,11 @@ pub struct Patcher {
 
 impl Patcher {
     pub fn new(project: HookProject, target: TargetApp, project_root: PathBuf) -> Self {
-        Self { project, target, project_root }
+        Self {
+            project,
+            target,
+            project_root,
+        }
     }
 
     /// Default dylib path: `{project_root}/target/release/{dylib_filename}`
@@ -293,7 +293,8 @@ impl Patcher {
             bail!("cargo build failed with {}", status);
         }
 
-        let dylib = self.project_root
+        let dylib = self
+            .project_root
             .join("target/release")
             .join(&self.project.dylib_filename);
 
@@ -329,7 +330,10 @@ impl Patcher {
         }
 
         if !tool_path.exists() {
-            bail!("install succeeded but binary not found at {}", tool_path.display());
+            bail!(
+                "install succeeded but binary not found at {}",
+                tool_path.display()
+            );
         }
 
         Ok(tool_path)
@@ -375,12 +379,16 @@ impl Patcher {
     /// Inject our hook dylib (stacking alongside existing hooks).
     pub fn inject(&self, dylib_path: &Path) -> Result<()> {
         let insert_dylib = self.ensure_insert_dylib()?;
-        let dylib_abs = std::fs::canonicalize(dylib_path)
-            .context("failed to canonicalize dylib path")?;
+        let dylib_abs =
+            std::fs::canonicalize(dylib_path).context("failed to canonicalize dylib path")?;
 
         let bin = self.target.binary_path();
 
-        eprintln!("[inject] {} → {}", self.project.dylib_filename, bin.display());
+        eprintln!(
+            "[inject] {} → {}",
+            self.project.dylib_filename,
+            bin.display()
+        );
 
         let output = Command::new(&insert_dylib)
             .arg("--weak")
@@ -473,7 +481,10 @@ impl Patcher {
                 if path.exists() {
                     hooks_to_inject.push((hook.name.clone(), path));
                 } else {
-                    eprintln!("[warn] Registered hook '{}' dylib not found: {}", hook.name, hook.dylib_path);
+                    eprintln!(
+                        "[warn] Registered hook '{}' dylib not found: {}",
+                        hook.name, hook.dylib_path
+                    );
                 }
             }
         }
@@ -494,7 +505,10 @@ impl Patcher {
         // Step 4: Verify
         let verified = self.verify()?;
         if !verified {
-            bail!("verification failed: {} not found in binary after injection", self.project.dylib_filename);
+            bail!(
+                "verification failed: {} not found in binary after injection",
+                self.project.dylib_filename
+            );
         }
 
         // Step 5: Update registry
@@ -503,7 +517,14 @@ impl Patcher {
         eprintln!();
         eprintln!("Patched successfully!");
         eprintln!("  App:    {}", self.target.app_path.display());
-        eprintln!("  Hooks:  {}", hooks_to_inject.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "));
+        eprintln!(
+            "  Hooks:  {}",
+            hooks_to_inject
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
 
         Ok(PatchResult {
             dylib_path: dylib,
@@ -593,7 +614,11 @@ impl Patcher {
             .arg("-e")
             .arg(format!(
                 "tell application \"{}\" to quit",
-                self.target.app_path.file_stem().unwrap_or_default().to_string_lossy()
+                self.target
+                    .app_path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
             ))
             .output();
 
@@ -623,7 +648,9 @@ impl Patcher {
     /// may not be cleaned up when the main process dies. This finds them by looking
     /// for processes whose command line references the app's support directory.
     fn kill_orphaned_children(&self) {
-        let app_name = self.target.app_path
+        let app_name = self
+            .target
+            .app_path
             .file_stem()
             .unwrap_or_default()
             .to_string_lossy();
@@ -636,26 +663,25 @@ impl Patcher {
         ];
 
         for pattern in &patterns {
-            let output = Command::new("pgrep")
-                .arg("-f")
-                .arg(pattern)
-                .output();
+            let output = Command::new("pgrep").arg("-f").arg(pattern).output();
 
             if let Ok(output) = output {
                 let pids = String::from_utf8_lossy(&output.stdout);
                 let count = pids.lines().filter(|l| !l.trim().is_empty()).count();
                 if count > 0 {
-                    eprintln!("[detached] Killing {} orphaned child processes (pattern: {})", count, pattern);
-                    let _ = Command::new("pkill")
-                        .arg("-f")
-                        .arg(pattern)
-                        .output();
+                    eprintln!(
+                        "[detached] Killing {} orphaned child processes (pattern: {})",
+                        count, pattern
+                    );
+                    let _ = Command::new("pkill").arg("-f").arg(pattern).output();
                 }
             }
         }
 
         // Also kill the crash handler if still running
-        let binary_name = self.target.binary_path()
+        let binary_name = self
+            .target
+            .binary_path()
             .file_name()
             .unwrap_or_default()
             .to_string_lossy()
@@ -698,15 +724,27 @@ impl Patcher {
         // Complex case: we're inside the target app.
         // Spawn a detached process in a NEW SESSION (setsid) so it survives when
         // the app quits and sends SIGHUP to its session.
-        let xtask_bin = std::env::current_exe()
-            .context("cannot determine current executable")?;
+        let xtask_bin = std::env::current_exe().context("cannot determine current executable")?;
 
         let app_pid = Command::new("pgrep")
             .arg("-x")
-            .arg(self.target.binary_path().file_name().unwrap_or_default().to_string_lossy().as_ref())
+            .arg(
+                self.target
+                    .binary_path()
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .as_ref(),
+            )
             .output()
             .ok()
-            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().lines().next().map(|s| s.to_string()))
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .lines()
+                    .next()
+                    .map(|s| s.to_string())
+            })
             .unwrap_or_default();
 
         // Open log file for the detached process (stderr will be invalid after app quits).
@@ -718,7 +756,10 @@ impl Patcher {
         let log_file = std::fs::File::create(&log_path)
             .context("failed to create detached patcher log file")?;
 
-        eprintln!("[patch] Running inside target app (pid={}). Spawning detached patcher...", app_pid);
+        eprintln!(
+            "[patch] Running inside target app (pid={}). Spawning detached patcher...",
+            app_pid
+        );
         eprintln!("[patch] Detached log: {}", log_path.display());
 
         let mut cmd = Command::new(&xtask_bin);
@@ -729,7 +770,10 @@ impl Patcher {
             }
         }
         cmd.env("__DYLIB_PATCHER_APP_PID", &app_pid);
-        cmd.env("__DYLIB_PATCHER_DYLIB_PATH", dylib.to_string_lossy().as_ref());
+        cmd.env(
+            "__DYLIB_PATCHER_DYLIB_PATH",
+            dylib.to_string_lossy().as_ref(),
+        );
 
         // Redirect stdio away from the terminal (it dies when the app quits)
         cmd.stdin(std::process::Stdio::null())
@@ -749,14 +793,21 @@ impl Patcher {
         }
 
         let child = cmd.spawn().context("failed to spawn detached patcher")?;
-        eprintln!("[detached] Patcher spawned (pid={}). Quitting app...", child.id());
+        eprintln!(
+            "[detached] Patcher spawned (pid={}). Quitting app...",
+            child.id()
+        );
 
         // Now quit the app — this will kill us too (if we're a child process)
         let _ = Command::new("osascript")
             .arg("-e")
             .arg(format!(
                 "tell application \"{}\" to quit",
-                self.target.app_path.file_stem().unwrap_or_default().to_string_lossy()
+                self.target
+                    .app_path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
             ))
             .output();
 
@@ -777,7 +828,9 @@ impl Patcher {
     pub fn run_detached_patch(&self) -> Result<PatchResult> {
         // Ignore SIGHUP as belt-and-suspenders (setsid should already protect us)
         #[cfg(unix)]
-        unsafe { libc::signal(libc::SIGHUP, libc::SIG_IGN); }
+        unsafe {
+            libc::signal(libc::SIGHUP, libc::SIG_IGN);
+        }
 
         let app_pid = std::env::var("__DYLIB_PATCHER_APP_PID").unwrap_or_default();
         let dylib_path = std::env::var("__DYLIB_PATCHER_DYLIB_PATH")
@@ -788,7 +841,8 @@ impl Patcher {
 
         // Wait for the app process to die
         if !app_pid.is_empty() {
-            for _ in 0..30 { // max 30 seconds
+            for _ in 0..30 {
+                // max 30 seconds
                 let still_running = Command::new("kill")
                     .arg("-0")
                     .arg(&app_pid)
@@ -866,7 +920,10 @@ impl Patcher {
             let _ = reg.save(&self.target.app_id);
         }
 
-        eprintln!("[remove] Removed {}. Other hooks preserved.", self.project.name);
+        eprintln!(
+            "[remove] Removed {}. Other hooks preserved.",
+            self.project.name
+        );
         Ok(())
     }
 
@@ -875,8 +932,15 @@ impl Patcher {
         let bin = self.target.binary_path();
         eprintln!("App:     {}", self.target.app_path.display());
         eprintln!("Binary:  {}", bin.display());
-        eprintln!("Backup:  {} ({})", self.target.backup_path().display(),
-            if self.target.backup_path().exists() { "exists" } else { "missing" });
+        eprintln!(
+            "Backup:  {} ({})",
+            self.target.backup_path().display(),
+            if self.target.backup_path().exists() {
+                "exists"
+            } else {
+                "missing"
+            }
+        );
 
         eprintln!("\nInjected hooks (otool):");
         for h in self.list_injected()? {
@@ -890,34 +954,48 @@ impl Patcher {
                     eprintln!("  Last patched: {}", ts);
                 }
                 for hook in reg.hooks_by_load_order() {
-                    eprintln!("\n  {} v{} (order={})",
+                    eprintln!(
+                        "\n  {} v{} (order={})",
                         hook.name,
                         hook.version.as_deref().unwrap_or("?"),
-                        hook.load_order.unwrap_or(0));
+                        hook.load_order.unwrap_or(0)
+                    );
                     eprintln!("    features: {:?}", hook.features);
                     eprintln!("    dylib: {}", hook.dylib_path);
                     for sym in &hook.hooked_symbols {
-                        eprintln!("    hook: {} [{}] {}", sym.symbol, sym.method,
-                            sym.description.as_deref().unwrap_or(""));
+                        eprintln!(
+                            "    hook: {} [{}] {}",
+                            sym.symbol,
+                            sym.method,
+                            sym.description.as_deref().unwrap_or("")
+                        );
                     }
                     // Artifact info
                     if let Some(art) = &hook.artifact {
-                        eprintln!("    artifact: sha256={:.16}... size={} patched={}",
-                            art.sha256, art.size, art.patched_at);
+                        eprintln!(
+                            "    artifact: sha256={:.16}... size={} patched={}",
+                            art.sha256, art.size, art.patched_at
+                        );
                         if let Some(commit) = &art.git_commit {
                             eprintln!("    git: {}", commit);
                         }
                         // Stale check
                         match check_artifact_stale(hook) {
-                            Some(true) => eprintln!("    WARNING: dylib on disk has CHANGED since patching — re-patch needed"),
+                            Some(true) => eprintln!(
+                                "    WARNING: dylib on disk has CHANGED since patching — re-patch needed"
+                            ),
                             Some(false) => eprintln!("    artifact: up to date"),
                             None => eprintln!("    artifact: cannot verify (dylib missing?)"),
                         }
                     }
                     // Health check info
                     if let Some(hc) = &hook.health_check {
-                        eprintln!("    health: log={}, markers={}, timeout={}s",
-                            hc.log_glob, hc.success_markers.len(), hc.timeout_secs);
+                        eprintln!(
+                            "    health: log={}, markers={}, timeout={}s",
+                            hc.log_glob,
+                            hc.success_markers.len(),
+                            hc.timeout_secs
+                        );
                     }
                 }
             }
@@ -938,22 +1016,35 @@ impl Patcher {
 
     /// Show current config + available options.
     pub fn config_show(&self) -> Result<()> {
-        let meta = self.config_meta()
-            .ok_or_else(|| anyhow::anyhow!("This hook does not define a config schema.\nConfig is not supported for '{}'.", self.project.name))?;
+        let meta = self.config_meta().ok_or_else(|| {
+            anyhow::anyhow!(
+                "This hook does not define a config schema.\nConfig is not supported for '{}'.",
+                self.project.name
+            )
+        })?;
 
-        let path = meta.config_path(&self.target.app_id)
+        let path = meta
+            .config_path(&self.target.app_id)
             .ok_or_else(|| anyhow::anyhow!("cannot determine config path"))?;
         let exists = path.exists();
 
-        eprintln!("Config file: {} {}", path.display(), if exists { "(exists)" } else { "(using defaults)" });
+        eprintln!(
+            "Config file: {} {}",
+            path.display(),
+            if exists {
+                "(exists)"
+            } else {
+                "(using defaults)"
+            }
+        );
         eprintln!("App ID: {}", self.target.app_id);
         eprintln!();
 
         // Show current values
         if exists {
             let content = std::fs::read_to_string(&path)?;
-            let value: serde_json::Value = serde_json::from_str(&content)
-                .context("failed to parse config file")?;
+            let value: serde_json::Value =
+                serde_json::from_str(&content).context("failed to parse config file")?;
             eprintln!("{}", serde_json::to_string_pretty(&value)?);
         } else {
             let value: serde_json::Value = serde_json::from_str(&meta.defaults_json)
@@ -990,10 +1081,12 @@ impl Patcher {
 
     /// Set a single config field.
     pub fn config_set(&self, key: &str, value: &str) -> Result<()> {
-        let meta = self.config_meta()
+        let meta = self
+            .config_meta()
             .ok_or_else(|| anyhow::anyhow!("This hook does not define a config schema."))?;
 
-        let path = meta.config_path(&self.target.app_id)
+        let path = meta
+            .config_path(&self.target.app_id)
             .ok_or_else(|| anyhow::anyhow!("cannot determine config path"))?;
 
         // Load existing or create from defaults
@@ -1004,7 +1097,8 @@ impl Patcher {
             serde_json::from_str(&meta.defaults_json)?
         };
 
-        let obj = config.as_object_mut()
+        let obj = config
+            .as_object_mut()
             .ok_or_else(|| anyhow::anyhow!("config is not a JSON object"))?;
 
         if !obj.contains_key(key) {
@@ -1013,7 +1107,11 @@ impl Patcher {
             for field in &meta.fields {
                 msg.push_str(&format!("  {:<20}{}\n", field.key, field.description));
                 for opt in &field.options {
-                    let tag = if field.default_value.as_deref() == Some(&opt.value) { " [default]" } else { "" };
+                    let tag = if field.default_value.as_deref() == Some(&opt.value) {
+                        " [default]"
+                    } else {
+                        ""
+                    };
                     msg.push_str(&format!("    {}{}\n", opt.value, tag));
                 }
             }
@@ -1023,7 +1121,8 @@ impl Patcher {
         // Validate against known options if the field has them
         if let Some(field) = meta.fields.iter().find(|f| f.key == key) {
             if !field.options.is_empty() {
-                let valid_values: Vec<&str> = field.options.iter().map(|o| o.value.as_str()).collect();
+                let valid_values: Vec<&str> =
+                    field.options.iter().map(|o| o.value.as_str()).collect();
                 // Try to parse as JSON first (for numbers), fall back to string
                 let check_value = if value.starts_with('"') {
                     value.trim_matches('"')
@@ -1059,15 +1158,17 @@ impl Patcher {
 
     /// Reset config to defaults.
     pub fn config_reset(&self) -> Result<()> {
-        let meta = self.config_meta()
+        let meta = self
+            .config_meta()
             .ok_or_else(|| anyhow::anyhow!("This hook does not define a config schema."))?;
 
-        let path = meta.config_path(&self.target.app_id)
+        let path = meta
+            .config_path(&self.target.app_id)
             .ok_or_else(|| anyhow::anyhow!("cannot determine config path"))?;
 
         // Pretty-print the defaults
-        let value: serde_json::Value = serde_json::from_str(&meta.defaults_json)
-            .context("failed to parse defaults JSON")?;
+        let value: serde_json::Value =
+            serde_json::from_str(&meta.defaults_json).context("failed to parse defaults JSON")?;
         let json_str = serde_json::to_string_pretty(&value)?;
 
         if let Some(parent) = path.parent() {
@@ -1082,7 +1183,8 @@ impl Patcher {
 
     /// Print config file path.
     pub fn config_path(&self) -> Result<()> {
-        let meta = self.config_meta()
+        let meta = self
+            .config_meta()
             .ok_or_else(|| anyhow::anyhow!("This hook does not define a config schema."))?;
 
         if let Some(path) = meta.config_path(&self.target.app_id) {
@@ -1102,7 +1204,10 @@ impl Patcher {
         let hooks: Vec<&dylib_hook_registry::HookEntry> = match &registry {
             Some(reg) => reg.hooks_by_load_order(),
             None => {
-                bail!("no registry found for '{}' — run `cargo patch` first", self.target.app_id);
+                bail!(
+                    "no registry found for '{}' — run `cargo patch` first",
+                    self.target.app_id
+                );
             }
         };
 
@@ -1115,7 +1220,8 @@ impl Patcher {
             .iter()
             .map(|h| {
                 let size = h.health_check.as_ref().and_then(|hc| {
-                    resolve_glob_latest(&hc.log_glob).and_then(|p| std::fs::metadata(&p).ok().map(|m| m.len()))
+                    resolve_glob_latest(&hc.log_glob)
+                        .and_then(|p| std::fs::metadata(&p).ok().map(|m| m.len()))
                 });
                 (h.name.as_str(), size)
             })
@@ -1136,7 +1242,10 @@ impl Patcher {
             .max()
             .unwrap_or(10);
 
-        eprintln!("[verify] Waiting up to {}s for hooks to initialize...", max_timeout);
+        eprintln!(
+            "[verify] Waiting up to {}s for hooks to initialize...",
+            max_timeout
+        );
         std::thread::sleep(std::time::Duration::from_secs(max_timeout as u64));
 
         for (i, hook) in hooks.iter().enumerate() {
@@ -1147,7 +1256,10 @@ impl Patcher {
                 Ok(false) => "FAIL",
                 Err(_) => "ERROR",
             };
-            eprintln!("[verify] {} {} — {}", status, hook.name,
+            eprintln!(
+                "[verify] {} {} — {}",
+                status,
+                hook.name,
                 match &check_result {
                     Ok(true) => "all markers found".to_string(),
                     Ok(false) => "markers not found in log".to_string(),
@@ -1166,23 +1278,35 @@ impl Patcher {
         }
 
         let all_passed = results.iter().all(|r| r.passed);
-        eprintln!("\n[verify] {}", if all_passed { "ALL HOOKS VERIFIED" } else { "SOME HOOKS FAILED" });
+        eprintln!(
+            "\n[verify] {}",
+            if all_passed {
+                "ALL HOOKS VERIFIED"
+            } else {
+                "SOME HOOKS FAILED"
+            }
+        );
 
-        Ok(VerifyResult { hooks: results, all_passed })
+        Ok(VerifyResult {
+            hooks: results,
+            all_passed,
+        })
     }
 
     /// Update the hook registry after patching, including artifact hash.
     fn update_registry(&self, dylib_path: &Path) -> Result<()> {
-        let mut reg = dylib_hook_registry::HookRegistry::load(&self.target.app_id)
-            .unwrap_or_default();
+        let mut reg =
+            dylib_hook_registry::HookRegistry::load(&self.target.app_id).unwrap_or_default();
 
         reg.app_id = Some(self.target.app_id.clone());
         reg.host_app = Some(self.target.app_path.to_string_lossy().to_string());
         reg.last_patched = Some(chrono::Utc::now().to_rfc3339());
 
-        let mut entry = self.project.registry_entry.clone().unwrap_or_else(||
-            dylib_hook_registry::HookEntry::new(&self.project.name, "")
-        );
+        let mut entry = self
+            .project
+            .registry_entry
+            .clone()
+            .unwrap_or_else(|| dylib_hook_registry::HookEntry::new(&self.project.name, ""));
         entry.dylib_path = dylib_path.to_string_lossy().to_string();
         entry.installed_at = Some(chrono::Utc::now().to_rfc3339());
         entry.artifact = Some(compute_artifact_info(dylib_path, &self.project_root)?);
@@ -1256,16 +1380,11 @@ pub fn check_artifact_stale(entry: &dylib_hook_registry::HookEntry) -> Option<bo
 }
 
 fn get_arg_value(args: &[String], flag: &str) -> Option<String> {
-    args.windows(2)
-        .find(|w| w[0] == flag)
-        .map(|w| w[1].clone())
+    args.windows(2).find(|w| w[0] == flag).map(|w| w[1].clone())
 }
 
 /// Verify a single hook by checking its log file for health check markers.
-fn verify_hook(
-    hook: &dylib_hook_registry::HookEntry,
-    baseline_size: Option<u64>,
-) -> Result<bool> {
+fn verify_hook(hook: &dylib_hook_registry::HookEntry, baseline_size: Option<u64>) -> Result<bool> {
     let hc = match &hook.health_check {
         Some(hc) => hc,
         None => {
@@ -1279,8 +1398,7 @@ fn verify_hook(
         .ok_or_else(|| anyhow::anyhow!("log file not found matching: {}", hc.log_glob))?;
 
     // Read only NEW log content (after baseline)
-    let content = std::fs::read_to_string(&log_path)
-        .context("failed to read log file")?;
+    let content = std::fs::read_to_string(&log_path).context("failed to read log file")?;
     let new_content = match baseline_size {
         Some(offset) if (offset as usize) < content.len() => &content[offset as usize..],
         _ => &content,
@@ -1309,7 +1427,10 @@ fn verify_hook(
 /// Supports `~` expansion and `*` wildcards.
 fn resolve_glob_latest(pattern: &str) -> Option<PathBuf> {
     let expanded = if pattern.starts_with("~/") {
-        dirs::home_dir()?.join(&pattern[2..]).to_string_lossy().to_string()
+        dirs::home_dir()?
+            .join(&pattern[2..])
+            .to_string_lossy()
+            .to_string()
     } else {
         pattern.to_string()
     };
@@ -1491,10 +1612,7 @@ mod tests {
 ";
         assert_eq!(
             parse_injected(with_spaces),
-            vec![
-                "/Users/me/Library/Application Support/MyApp/lib.dylib".to_string()
-            ]
+            vec!["/Users/me/Library/Application Support/MyApp/lib.dylib".to_string()]
         );
     }
 }
-

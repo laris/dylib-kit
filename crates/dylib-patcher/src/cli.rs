@@ -89,7 +89,8 @@ pub fn run(patcher: Patcher) -> Result<()> {
         }
         Some("config") => {
             // Sub-subcommands: config [show|set|reset|path]
-            let config_args: Vec<&str> = args.iter()
+            let config_args: Vec<&str> = args
+                .iter()
                 .skip(1)
                 .filter(|a| *a != "config" && !a.starts_with('-'))
                 .map(|s| s.as_str())
@@ -101,9 +102,11 @@ pub fn run(patcher: Patcher) -> Result<()> {
                     if config_args.len() < 3 {
                         // Show field list as usage help
                         if let Some(meta) = patcher.config_meta() {
-                            let mut msg = "Usage: cargo patch config set <key> <value>\n\nKeys:\n".to_string();
+                            let mut msg = "Usage: cargo patch config set <key> <value>\n\nKeys:\n"
+                                .to_string();
                             for field in &meta.fields {
-                                let vals: Vec<&str> = field.options.iter().map(|o| o.value.as_str()).collect();
+                                let vals: Vec<&str> =
+                                    field.options.iter().map(|o| o.value.as_str()).collect();
                                 msg.push_str(&format!("  {:<20}{}\n", field.key, vals.join(" | ")));
                             }
                             anyhow::bail!("{msg}");
